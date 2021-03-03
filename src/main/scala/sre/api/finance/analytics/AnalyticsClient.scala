@@ -18,7 +18,7 @@ case class AnalyticsClient[F[_]](
 
   def reindex(fromScratch: Boolean): F[List[PeriodIndex]] = {
     val eventuallyIndexes = if (fromScratch) {
-      indexClient.computePeriodIndexesFromScrach()
+      indexClient.computePeriodIndexesFromScratch()
     } else {
       indexClient.computeLatestPeriodIndexes()
     }
@@ -60,10 +60,10 @@ case class AnalyticsClient[F[_]](
           .map(f => finance.ofx.OfxStmTrn.load(f).map(f.accountId -> _))
           .sequence
           .map { transactionsByAccount =>
-            transactionsByAccount.map {
+            CMStatement.merge(transactionsByAccount.map {
               case (accountId, transactions) =>
                 transactions.map(_.toStatement(accountId))
-            }.flatten.distinct.sorted(CMStatement.ORDER_ASC)
+            }.flatten).sorted(CMStatement.ORDER_ASC)
              .dropWhile(_.date.isBefore(periodIndex.startDate))
              .takeWhile(_.date.isBefore(periodIndex.endDate))
           }
@@ -82,11 +82,11 @@ case class AnalyticsClient[F[_]](
           .filter(_.accountId == accountId)
           .map(f => finance.ofx.OfxStmTrn.load(f))
           .sequence.map { ofxStmTrn =>
-            ofxStmTrn
-              .flatten
-              .map(_.toStatement(accountId))
-              .distinct
-              .sorted(CMStatement.ORDER_ASC)
+            CMStatement.merge(
+              ofxStmTrn
+                .flatten
+                .map(_.toStatement(accountId))
+            ).sorted(CMStatement.ORDER_ASC)
               .dropWhile(_.date.isBefore(periodIndex.startDate))
               .takeWhile(_.date.isBefore(periodIndex.endDate))
           }
@@ -96,29 +96,15 @@ case class AnalyticsClient[F[_]](
     }
   }
 
-  def getPreviousPeriods(): F[List[Period]] = {
-    dbClient.selectAllPeriodIndexes().map { periodIndexes =>
-      periodIndexes.map { periodIndex =>
-        Period(
-          startDate = periodIndex.startDate,
-          endDate = Some(periodIndex.endDate),
-          yearMonth = Some(periodIndex.yearMonth),
-          balance = periodIndex.balance
-        )
-      }
+  def getPreviousPeriods(maybeBeforePeriod: Option[YearMonth], limit: Int): F[List[Period]] = {
+    dbClient.selectPeriodIndexes(maybeBeforePeriod, limit).map { periodIndexes =>
+      periodIndexes.map(Period(_))
     }
   }
 
   def computeCurrentPeriod(statements: List[CMStatement]): F[Option[Period]] = {
     indexClient.computePeriodIndexesFrom(statements).map { indexes =>
-      indexes.lastOption.map { periodIndex =>
-        Period(
-          startDate = periodIndex.startDate,
-          endDate = periodIndex.maybeEndDate,
-          yearMonth = None,
-          balance = periodIndex.balance
-        )
-      }
+      indexes.lastOption.map(Period(_))
     }
   }
 }

@@ -13,20 +13,41 @@ case class DBClient[F[_]]()(implicit connection: Connection, F: Effect[F]) {
   def upsertPeriodIndexes(periodIndexes: List[PeriodIndex]): F[Unit] =
     F.delay {
       periodIndexes.collect {
-        case CompletePeriodIndex(yearMonth, partitions, startDate, endDate, wageStatements, balance) =>
+        case period@CompletePeriodIndex(yearMonth, partitions, startDate, endDate, wageStatements, result, balancesByAccount) =>
           val encodedPartitions = CompletePeriodIndex.encodePartitions(partitions)
           val encodedWageStatements = CompletePeriodIndex.encodeWageStatements(wageStatements)
           val lastUpdate = java.time.LocalDateTime.now()
+          val encodedBalancesByAccount = CompletePeriodIndex.encodeBalancesByAccount(balancesByAccount)
 
-          SQL"""REPLACE INTO FINANCE_PERIODINDEX(yearmonth, startdate, enddate, partitions, wagestatements, balance, lastupdate)
-            values (${yearMonth.atDay(1)}, $startDate, $endDate, $encodedPartitions, $encodedWageStatements, $balance, $lastUpdate)""".executeUpdate()
+          SQL"""REPLACE INTO FINANCE_PERIODINDEX(yearmonth, startdate, enddate, partitions, wagestatements, result, balancesByAccount, lastupdate)
+            values (
+              ${yearMonth.atDay(1)},
+              $startDate,
+              $endDate,
+              $encodedPartitions,
+              $encodedWageStatements,
+              $result,
+              $encodedBalancesByAccount,
+              $lastUpdate
+            )""".executeUpdate()
       }
     }
 
-  def selectAllPeriodIndexes(): F[List[CompletePeriodIndex]] =
+  def selectPeriodIndexes(maybeBeforePeriod: Option[YearMonth], limit: Int): F[List[CompletePeriodIndex]] =
     F.delay {
       try {
-        SQL"SELECT * FROM FINANCE_PERIODINDEX".as(CompletePeriodIndex.parser.*)
+        maybeBeforePeriod match {
+          case Some(beforePeriodDate) =>
+            SQL("SELECT * FROM FINANCE_PERIODINDEX WHERE yearMonth < {yearmonth} ORDER BY yearmonth DESC LIMIT {limit}")
+              .on("yearmonth" -> beforePeriodDate.atDay(1))
+              .on("limit" -> limit)
+              .as(CompletePeriodIndex.parser.*)
+
+          case None =>
+            SQL("SELECT * FROM FINANCE_PERIODINDEX ORDER BY yearmonth DESC LIMIT {limit}")
+              .on("limit" -> limit)
+              .as(CompletePeriodIndex.parser.*)
+        }
       } catch {
         case e: Exception =>
           e.printStackTrace
@@ -58,7 +79,8 @@ object DBClient {
             enddate NUMERIC UNIQUE,
             partitions TEXT,
             wagestatements TEXT,
-            balance NUMERIC,
+            result NUMERIC,
+            balancesByAccount TEXT,
             lastupdate NUMERIC
     );""".execute()
     }
